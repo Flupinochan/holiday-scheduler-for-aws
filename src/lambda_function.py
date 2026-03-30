@@ -3,7 +3,6 @@ import json
 import logging
 from datetime import datetime, timezone
 
-import boto3
 import pytz
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -14,21 +13,19 @@ logger.setLevel(logging.INFO)
 
 JAPAN_HOLIDAY_CALENDAR = "japanese__ja@holiday.calendar.google.com"
 JST = pytz.timezone("Asia/Tokyo")
-SECRET_ARN_ENV = "GCP_SERVICE_ACCOUNT_SECRET_ARN"
+SERVICE_ACCOUNT_FILE_ENV = "GCP_SERVICE_ACCOUNT_FILE"
 
 
 def fetch_gcp_credentials():
-    secret_arn = os.environ.get(SECRET_ARN_ENV)
-    if not secret_arn:
-        raise ValueError(f"Environment variable {SECRET_ARN_ENV} is not set")
+    file_path = os.environ.get(SERVICE_ACCOUNT_FILE_ENV, "service_account.json")
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except FileNotFoundError:
+        raise ValueError(f"Service account file not found: {file_path}")
+    except Exception as e:
+        raise ValueError(f"Failed to read service account file {file_path}: {e}")
 
-    client = boto3.client("secretsmanager")
-    resp = client.get_secret_value(SecretId=secret_arn)
-    secret_str = resp.get("SecretString")
-    if not secret_str:
-        raise ValueError("SecretString is empty")
-
-    payload = json.loads(secret_str)
     credentials = service_account.Credentials.from_service_account_info(payload)
     return credentials
 

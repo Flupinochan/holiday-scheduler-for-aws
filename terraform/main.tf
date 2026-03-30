@@ -22,30 +22,11 @@ resource "aws_iam_role_policy_attachment" "lambda_logs" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-resource "aws_iam_policy" "lambda_secret_read" {
-  name        = "holiday-scheduler-lambda-secret-read"
-  description = "Allow Lambda to read the secret that contains GCP workload identity configuration"
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "secretsmanager:GetSecretValue"
-      ]
-      Resource = "*"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "lambda_secret_policy" {
-  role       = aws_iam_role.lambda_role.name
-  policy_arn = aws_iam_policy.lambda_secret_read.arn
-}
 
 resource "aws_cloudwatch_log_group" "lambda" {
   name              = "/aws/lambda/${var.lambda_function_name}"
-  retention_in_days = 14
+  retention_in_days = 1
 }
 
 resource "aws_lambda_layer_version" "holiday_deps" {
@@ -74,27 +55,47 @@ resource "aws_lambda_function" "holiday_scheduler" {
     }
   }
 
-  depends_on = [aws_iam_role_policy_attachment.lambda_logs, aws_iam_role_policy_attachment.lambda_secret_policy]
+  depends_on = [aws_iam_role_policy_attachment.lambda_logs]
 }
 
-resource "aws_cloudwatch_event_rule" "daily_schedule" {
+resource "aws_iam_role" "scheduler_exec_role" {
+  name = "holiday-scheduler-exec-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "scheduler.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "scheduler_invoke" {
+  name   = "holiday-scheduler-invoke-lambda"
+  role   = aws_iam_role.scheduler_exec_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = ["lambda:InvokeFunction"]
+      Resource = [aws_lambda_function.holiday_scheduler.arn]
+    }]
+  })
+}
+
+resource "aws_scheduler_schedule" "daily_schedule" {
   name                = "holiday-scheduler-daily"
-  description         = "Daily trigger at 00:00 JST"
-  schedule_expression = "cron(0 15 * * ? *)" # JST midnight
-}
+  schedule_expression = "cron(0 15 * * ? *)"
 
-resource "aws_cloudwatch_event_target" "run_lambda" {
-  rule      = aws_cloudwatch_event_rule.daily_schedule.name
-  target_id = "HolidaySchedulerLambda"
-  arn       = aws_lambda_function.holiday_scheduler.arn
-}
+  flexible_time_window {
+    mode = "OFF"
+  }
 
-resource "aws_lambda_permission" "allow_eventbridge" {
-  statement_id  = "AllowExecutionFromEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.holiday_scheduler.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.daily_schedule.arn
+  target {
+    arn      = aws_lambda_function.holiday_scheduler.arn
+    role_arn = aws_iam_role.scheduler_exec_role.arn
+  }
 }
 
 ############################
