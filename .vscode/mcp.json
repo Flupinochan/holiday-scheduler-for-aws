@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "terraform": {
+      "args": ["run", "-i", "--rm", "terraform-mcp-server:dev"],
+      "command": "docker"
+    }
+  }
+}
