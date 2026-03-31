@@ -1,6 +1,37 @@
-############################
-# AWS resources
-############################
+resource "null_resource" "pip_install" {
+  triggers = {
+    requirements_in_hash = fileexists("${path.module}/../src/requirements.in") ? filemd5("${path.module}/../src/requirements.in") : ""
+    requirements_hash    = fileexists("${path.module}/../src/requirements.txt") ? filemd5("${path.module}/../src/requirements.txt") : ""
+  }
+
+  provisioner "local-exec" {
+    command = <<EOT
+      rm -rf ${path.module}/../src/__pycache__
+      if [ -f ${path.module}/../src/requirements.in ]; then
+        pip install --upgrade pip pip-tools || true
+        pip-compile ${path.module}/../src/requirements.in -o ${path.module}/../src/requirements.txt || true
+      fi
+      if [ -f ${path.module}/../src/requirements.txt ]; then
+        pip install -r ${path.module}/../src/requirements.txt \
+          -t ${path.module}/../src \
+          --upgrade \
+          --platform manylinux2014_x86_64 \
+          --implementation cp \
+          --python-version 3.13 \
+          --only-binary=:all:
+      fi
+    EOT
+  }
+}
+
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/../src"
+  output_path = "${path.module}/lambda_function.zip"
+  excludes    = ["requirements.txt"]
+
+  depends_on = [null_resource.pip_install]
+}
 
 resource "aws_iam_role" "lambda_role" {
   name = "holiday-scheduler-lambda-role"
@@ -22,20 +53,10 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-
-
 resource "aws_cloudwatch_log_group" "lambda_log_group" {
   name              = "/aws/lambda/holiday-scheduler-lambda"
   retention_in_days = 1
 }
-
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/../src"
-  output_path = "${path.module}/lambda_function.zip"
-}
-
-
 
 resource "aws_lambda_function" "holiday_scheduler_function" {
   function_name    = "holiday-scheduler-lambda"
@@ -44,6 +65,7 @@ resource "aws_lambda_function" "holiday_scheduler_function" {
   runtime          = "python3.13"
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+
 
   logging_config {
     log_format = "JSON"
@@ -54,7 +76,6 @@ resource "aws_lambda_function" "holiday_scheduler_function" {
     variables = {
       GCP_WORKLOAD_IDENTITY_POOL     = google_iam_workload_identity_pool.workload_pool.name
       GCP_WORKLOAD_IDENTITY_PROVIDER = google_iam_workload_identity_pool_provider.workload_provider.name
-      GCP_SERVICE_ACCOUNT_EMAIL      = google_service_account.calendar_service_account.email
       GCP_PROJECT                    = var.gcp_project
     }
   }
@@ -102,20 +123,10 @@ resource "aws_scheduler_schedule" "daily_schedule" {
   }
 }
 
-############################
-# GCP resources
-############################
-
-resource "google_project_service" "calendar_api" {
-  service = "calendar.googleapis.com"
-
-  disable_on_destroy = false
-}
-
 resource "google_iam_workload_identity_pool" "workload_pool" {
   provider = google
 
-  workload_identity_pool_id = "aws-workload-pool"
+  workload_identity_pool_id = "aws-pool"
   display_name              = "AWS Workload Identity Pool"
   description               = "Pool for AWS Lambda to auth to GCP via Workload Identity Federation"
 }
@@ -123,34 +134,20 @@ resource "google_iam_workload_identity_pool" "workload_pool" {
 resource "google_iam_workload_identity_pool_provider" "workload_provider" {
   provider = google
 
-  workload_identity_pool_id          = "aws-workload-pool"
+  workload_identity_pool_id          = google_iam_workload_identity_pool.workload_pool.workload_identity_pool_id
   workload_identity_pool_provider_id = "aws-provider"
-  display_name                       = "AWS Provider for Workload Identity Federation"
+  display_name                       = "AWS Workload Provider"
   description                        = "Allow AWS STS tokens to be traded for GCP credentials"
-
-  oidc {
-    issuer_uri        = "https://sts.amazonaws.com"
-    allowed_audiences = ["arn:aws:iam::${var.aws_account_id}:role/${aws_iam_role.lambda_role.name}"]
-  }
-
+  disabled                           = false
+  attribute_condition                = "attribute.aws_account==\"${var.aws_account_id}\" && attribute.aws_role==\"${aws_iam_role.lambda_role.arn}\""
   attribute_mapping = {
-    "google.subject"        = "assertion.sub"
-    "attribute.aws_role"    = "assertion.aws.role"
-    "attribute.aws_account" = "assertion.aws.account_id"
-    "attribute.aws_region"  = "assertion.aws.region"
-    "attribute.aws_arn"     = "assertion.aws.arn"
+    "google.subject"        = "assertion.arn"
+    "attribute.aws_account" = "assertion.account"
+    "attribute.aws_role"    = "assertion.arn.contains('assumed-role') ? assertion.arn.extract('{account_arn}assumed-role/') + 'assumed-role/' + assertion.arn.extract('assumed-role/{role_name}/') : assertion.arn"
   }
-}
-
-resource "google_service_account" "calendar_service_account" {
-  account_id   = "holiday-scheduler-sa"
-  display_name = "Holiday Scheduler Service Account"
-}
-
-resource "google_project_iam_member" "calendar_api_reader_member" {
-  project = var.gcp_project
-  role    = "roles/calendar.reader"
-  member  = "serviceAccount:${google_service_account.calendar_service_account.email}"
+  aws {
+    account_id = var.aws_account_id
+  }
 }
 
 resource "google_project_iam_member" "workload_identity_user_member" {

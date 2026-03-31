@@ -9,7 +9,7 @@ SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 CREDENTIAL_FILE = os.path.join(
     os.path.dirname(__file__),
-    "external_account.json",
+    "clientLibraryConfig-aws-provider.json",
 )
 
 
