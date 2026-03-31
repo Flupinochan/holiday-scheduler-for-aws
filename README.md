@@ -53,9 +53,16 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
 
 ```bash
 # install (WSL)
+# https://docs.cloud.google.com/sdk/docs/install-sdk?hl=ja
 sudo snap install google-cloud-cli --classic
 gcloud version
 
 # login (using browser)
 gcloud auth application-default login
+
+# show active account
+gcloud auth list
+
+# show active project
+gcloud config get-value project
 ```

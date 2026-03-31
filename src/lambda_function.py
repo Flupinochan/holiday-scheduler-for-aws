@@ -1,95 +1,81 @@
-import os
+import datetime
 import json
-import logging
-from datetime import datetime, timezone
+import os
 
-import pytz
-from google.oauth2 import service_account
+from google.auth import load_credentials_from_file
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
-JAPAN_HOLIDAY_CALENDAR = "japanese__ja@holiday.calendar.google.com"
-JST = pytz.timezone("Asia/Tokyo")
-SERVICE_ACCOUNT_FILE_ENV = "GCP_SERVICE_ACCOUNT_FILE"
-
-
-def fetch_gcp_credentials():
-    file_path = os.environ.get(SERVICE_ACCOUNT_FILE_ENV, "service_account.json")
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except FileNotFoundError:
-        raise ValueError(f"Service account file not found: {file_path}")
-    except Exception as e:
-        raise ValueError(f"Failed to read service account file {file_path}: {e}")
-
-    credentials = service_account.Credentials.from_service_account_info(payload)
-    return credentials
+CREDENTIAL_FILE = os.path.join(
+    os.path.dirname(__file__),
+    "external_account.json",
+)
 
 
-def as_utc_rfc3339(dt):
-    return dt.astimezone(timezone.utc).isoformat(timespec="seconds")
+def get_calendar_service():
+    if not os.path.exists(CREDENTIAL_FILE):
+        raise RuntimeError(f"credential file not found: {CREDENTIAL_FILE}")
+
+    credentials, _ = load_credentials_from_file(
+        CREDENTIAL_FILE,
+        scopes=SCOPES,
+    )
+
+    service = build(
+        "calendar",
+        "v3",
+        credentials=credentials,
+        cache_discovery=False,
+    )
+
+    return service
 
 
-def is_weekend(date_obj):
-    return date_obj.weekday() in (5, 6)
+def get_japanese_holidays():
+    service = get_calendar_service()
 
+    now = datetime.datetime.utcnow().isoformat() + "Z"
 
-def is_holiday(date_obj, credentials):
-    start_jst = JST.localize(datetime(date_obj.year, date_obj.month, date_obj.day, 0, 0, 0))
-    end_jst = JST.localize(datetime(date_obj.year, date_obj.month, date_obj.day, 23, 59, 59))
-
-    service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
-    try:
-        events = (
-            service.events()
-            .list(
-                calendarId=JAPAN_HOLIDAY_CALENDAR,
-                timeMin=as_utc_rfc3339(start_jst),
-                timeMax=as_utc_rfc3339(end_jst),
-                singleEvents=True,
-                orderBy="startTime",
-                maxResults=10,
-            )
-            .execute()
+    result = (
+        service.events()
+        .list(
+            calendarId="ja.japanese#holiday@group.v.calendar.google.com",
+            timeMin=now,
+            maxResults=20,
+            singleEvents=True,
+            orderBy="startTime",
         )
-    except HttpError as err:
-        logger.error("GCP Calendar API call failed: %s", err)
-        raise
+        .execute()
+    )
 
-    items = events.get("items", [])
-    logger.info("Found %d holiday events for %s", len(items), date_obj.isoformat())
-    if len(items) > 0:
-        logger.info("Holiday event names: %s", [it.get("summary") for it in items])
-    return len(items) > 0
+    holidays = []
+
+    for event in result.get("items", []):
+        holidays.append(
+            {
+                "name": event["summary"],
+                "date": event["start"]["date"],
+            },
+        )
+
+    return holidays
 
 
-def handler(event, context):
-    now_jst = datetime.now(JST)
-    today = now_jst.date()
-    logger.info("Lambda invoked at JST %s", now_jst.isoformat())
-
-    if is_weekend(today):
-        logger.info("Weekend detected, skipping business job")
-        return {"status": "skipped", "reason": "weekend", "date": today.isoformat()}
-
-    creds = fetch_gcp_credentials()
+def lambda_handler(event, context):
     try:
-        if is_holiday(today, creds):
-            logger.info("Holiday detected, skipping business job")
-            return {"status": "skipped", "reason": "holiday", "date": today.isoformat()}
-    except Exception as err:
-        logger.exception("Error during holiday check")
-        return {"status": "error", "reason": "holiday_check_failed", "error": str(err)}
+        holidays = get_japanese_holidays()
 
-    # ここに本番業務ロジックを実装
-    try:
-        logger.info("Business day confirmed, running business logic")
-        # TODO: 処理を実行
-        return {"status": "ok", "date": today.isoformat(), "detail": "executed"}
-    except Exception as err:
-        logger.exception("Business job failed")
-        raise
+        return {
+            "statusCode": 200,
+            "body": json.dumps(
+                holidays,
+                ensure_ascii=False,
+            ),
+        }
+
+    except Exception as e:
+        return {
+            "statusCode": 500,
+            "body": str(e),
+        }

@@ -10,31 +10,15 @@ variable "aws_account_id" {
 }
 
 variable "lambda_function_name" {
-  description = "Lambda function name. Must exist as a zip artifact." 
+  description = "Lambda function name. Must exist as a zip artifact."
   type        = string
   default     = "holiday-scheduler-lambda"
-}
-
-variable "lambda_runtime" {
-  type    = string
-  default = "python3.11"
-}
-
-variable "lambda_handler" {
-  type    = string
-  default = "lambda_function.handler"
 }
 
 variable "lambda_package_path" {
   description = "Path to Lambda zip package from terraform module root"
   type        = string
   default     = "../lambda_function.zip"
-}
-
-variable "lambda_layer_package_path" {
-  description = "Path to Lambda layer zip package (python dependencies)"
-  type        = string
-  default     = "../lambda_layer.zip"
 }
 
 variable "gcp_project" {
