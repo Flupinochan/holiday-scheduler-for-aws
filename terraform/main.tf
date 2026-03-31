@@ -25,19 +25,25 @@ resource "aws_iam_role_policy_attachment" "lambda_basic_execution" {
 
 
 resource "aws_cloudwatch_log_group" "lambda_log_group" {
-  name              = "/aws/lambda/${var.lambda_function_name}"
+  name              = "/aws/lambda/holiday-scheduler-lambda"
   retention_in_days = 1
+}
+
+data "archive_file" "lambda_zip" {
+  type        = "zip"
+  source_dir  = "${path.module}/../src"
+  output_path = "${path.module}/lambda_function.zip"
 }
 
 
 
 resource "aws_lambda_function" "holiday_scheduler_function" {
-  function_name    = var.lambda_function_name
+  function_name    = "holiday-scheduler-lambda"
   role             = aws_iam_role.lambda_role.arn
   handler          = "lambda_function.handler"
   runtime          = "python3.13"
-  filename         = var.lambda_package_path
-  source_code_hash = filebase64sha256(var.lambda_package_path)
+  filename         = data.archive_file.lambda_zip.output_path
+  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
   logging_config {
     log_format = "JSON"
@@ -109,7 +115,7 @@ resource "google_project_service" "calendar_api" {
 resource "google_iam_workload_identity_pool" "workload_pool" {
   provider = google
 
-  workload_identity_pool_id = var.gcp_workload_identity_pool_id
+  workload_identity_pool_id = "aws-workload-pool"
   display_name              = "AWS Workload Identity Pool"
   description               = "Pool for AWS Lambda to auth to GCP via Workload Identity Federation"
 }
@@ -117,8 +123,8 @@ resource "google_iam_workload_identity_pool" "workload_pool" {
 resource "google_iam_workload_identity_pool_provider" "workload_provider" {
   provider = google
 
-  workload_identity_pool_id          = google_iam_workload_identity_pool.workload_pool.workload_identity_pool_id
-  workload_identity_pool_provider_id = var.gcp_workload_identity_provider_id
+  workload_identity_pool_id          = "aws-workload-pool"
+  workload_identity_pool_provider_id = "aws-provider"
   display_name                       = "AWS Provider for Workload Identity Federation"
   description                        = "Allow AWS STS tokens to be traded for GCP credentials"
 

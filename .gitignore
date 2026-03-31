@@ -1,1 +1,3 @@
 terraform-mcp-server/
+.terraform*
+lambda_function.zip

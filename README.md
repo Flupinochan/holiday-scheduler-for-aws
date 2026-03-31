@@ -48,21 +48,3 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
 ```
 
 [Available tools](https://developer.hashicorp.com/terraform/mcp-server/reference#available-tools)
-
-## Setup GCP
-
-```bash
-# install (WSL)
-# https://docs.cloud.google.com/sdk/docs/install-sdk?hl=ja
-sudo snap install google-cloud-cli --classic
-gcloud version
-
-# login (using browser)
-gcloud auth application-default login
-
-# show active account
-gcloud auth list
-
-# show active project
-gcloud config get-value project
-```
