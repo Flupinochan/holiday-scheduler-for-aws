@@ -1,3 +1,8 @@
+variable "image_tag" {
+  type        = string
+  description = "ECR image tag to deploy"
+}
+
 variable "aws_region" {
   description = "AWS region for Lambda/EventBridge resources"
   type        = string

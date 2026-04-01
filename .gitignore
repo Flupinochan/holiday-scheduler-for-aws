@@ -1,4 +1,5 @@
 terraform-mcp-server/
 .terraform*
 terraform.tfstate*
+terraform.exe
 lambda_function.zip

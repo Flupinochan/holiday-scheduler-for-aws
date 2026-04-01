@@ -1,36 +1,30 @@
-resource "null_resource" "pip_install" {
-  triggers = {
-    requirements_in_hash = fileexists("${path.module}/../src/requirements.in") ? filemd5("${path.module}/../src/requirements.in") : ""
-    requirements_hash    = fileexists("${path.module}/../src/requirements.txt") ? filemd5("${path.module}/../src/requirements.txt") : ""
-  }
+resource "aws_ecr_repository" "lambda_repo" {
+  name = "holiday-scheduler"
 
-  provisioner "local-exec" {
-    command = <<EOT
-      rm -rf ${path.module}/../src/__pycache__
-      if [ -f ${path.module}/../src/requirements.in ]; then
-        pip install --upgrade pip pip-tools || true
-        pip-compile ${path.module}/../src/requirements.in -o ${path.module}/../src/requirements.txt || true
-      fi
-      if [ -f ${path.module}/../src/requirements.txt ]; then
-        pip install -r ${path.module}/../src/requirements.txt \
-          -t ${path.module}/../src \
-          --upgrade \
-          --platform manylinux2014_x86_64 \
-          --implementation cp \
-          --python-version 3.13 \
-          --only-binary=:all:
-      fi
-    EOT
+  image_scanning_configuration {
+    scan_on_push = false
   }
 }
 
-data "archive_file" "lambda_zip" {
-  type        = "zip"
-  source_dir  = "${path.module}/../src"
-  output_path = "${path.module}/lambda_function.zip"
-  excludes    = ["requirements.txt"]
+resource "aws_ecr_lifecycle_policy" "lambda_repo_policy" {
+  repository = aws_ecr_repository.lambda_repo.name
 
-  depends_on = [null_resource.pip_install]
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Keep only 1 images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 1
+        }
+        action = {
+          type = "expire"
+        }
+      }
+    ]
+  })
 }
 
 resource "aws_iam_role" "lambda_role" {
@@ -58,26 +52,21 @@ resource "aws_cloudwatch_log_group" "lambda_log_group" {
   retention_in_days = 1
 }
 
-resource "aws_lambda_function" "holiday_scheduler_function" {
-  function_name    = "holiday-scheduler-lambda"
-  role             = aws_iam_role.lambda_role.arn
-  handler          = "lambda_function.handler"
-  runtime          = "python3.13"
-  filename         = data.archive_file.lambda_zip.output_path
-  source_code_hash = data.archive_file.lambda_zip.output_base64sha256
+data "aws_ecr_image" "lambda_image" {
+  repository_name = aws_ecr_repository.lambda_repo.name
+  image_tag       = var.image_tag
+}
 
+resource "aws_lambda_function" "holiday_scheduler_function" {
+  function_name = "holiday-scheduler-lambda"
+  role          = aws_iam_role.lambda_role.arn
+  timeout       = 60
+  package_type  = "Image"
+  image_uri     = "${aws_ecr_repository.lambda_repo.repository_url}@${data.aws_ecr_image.lambda_image.image_digest}"
 
   logging_config {
     log_format = "JSON"
     log_group  = aws_cloudwatch_log_group.lambda_log_group.name
-  }
-
-  environment {
-    variables = {
-      GCP_WORKLOAD_IDENTITY_POOL     = google_iam_workload_identity_pool.workload_pool.name
-      GCP_WORKLOAD_IDENTITY_PROVIDER = google_iam_workload_identity_pool_provider.workload_provider.name
-      GCP_PROJECT                    = var.gcp_project
-    }
   }
 
   depends_on = [aws_iam_role_policy_attachment.lambda_basic_execution]
@@ -129,6 +118,12 @@ resource "google_iam_workload_identity_pool" "workload_pool" {
   workload_identity_pool_id = "aws-pool"
   display_name              = "AWS Workload Identity Pool"
   description               = "Pool for AWS Lambda to auth to GCP via Workload Identity Federation"
+
+  depends_on = [
+    google_project_service.calendar_api,
+    google_project_service.iamcredentials_api,
+    google_project_service.sts_api,
+  ]
 }
 
 resource "google_iam_workload_identity_pool_provider" "workload_provider" {
@@ -139,19 +134,102 @@ resource "google_iam_workload_identity_pool_provider" "workload_provider" {
   display_name                       = "AWS Workload Provider"
   description                        = "Allow AWS STS tokens to be traded for GCP credentials"
   disabled                           = false
-  attribute_condition                = "attribute.aws_account==\"${var.aws_account_id}\" && attribute.aws_role==\"${aws_iam_role.lambda_role.arn}\""
   attribute_mapping = {
-    "google.subject"        = "assertion.arn"
+    "google.subject"        = "assertion.account"
     "attribute.aws_account" = "assertion.account"
     "attribute.aws_role"    = "assertion.arn.contains('assumed-role') ? assertion.arn.extract('{account_arn}assumed-role/') + 'assumed-role/' + assertion.arn.extract('assumed-role/{role_name}/') : assertion.arn"
   }
+  attribute_condition = "attribute.aws_account == \"${var.aws_account_id}\""
+
   aws {
     account_id = var.aws_account_id
   }
+}
+
+resource "google_service_account" "allow_calendar_api" {
+  account_id   = "allow-calendar-api"
+  display_name = "Service Account for Calendar API"
+  project      = var.gcp_project
 }
 
 resource "google_project_iam_member" "workload_identity_user_member" {
   project = var.gcp_project
   role    = "roles/iam.workloadIdentityUser"
   member  = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.workload_pool.name}/attribute.aws_role/${aws_iam_role.lambda_role.arn}"
+}
+
+# Google Calendar API? の利用には、ServiceAccountTokenCreator権限が必要
+# また、Google Calendar APIを「有効なAPIとサービス」で許可しておく必要があるかも
+
+# 各権限の付与
+resource "google_service_account_iam_binding" "sa_token_creator" {
+  service_account_id = google_service_account.allow_calendar_api.name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  members = [
+    "principal://iam.googleapis.com/${google_iam_workload_identity_pool.workload_pool.name}/subject/${var.aws_account_id}",
+    "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.workload_pool.name}/attribute.aws_account/${var.aws_account_id}",
+  ]
+}
+
+resource "google_service_account_iam_binding" "workload_identity_user" {
+  service_account_id = google_service_account.allow_calendar_api.name
+  role               = "roles/iam.workloadIdentityUser"
+  members = [
+    "principal://iam.googleapis.com/${google_iam_workload_identity_pool.workload_pool.name}/subject/${var.aws_account_id}",
+    "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.workload_pool.name}/attribute.aws_account/${var.aws_account_id}",
+  ]
+}
+
+# 各APIの有効化
+resource "google_project_service" "calendar_api" {
+  project            = var.gcp_project
+  service            = "calendar-json.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "iamcredentials_api" {
+  project            = var.gcp_project
+  service            = "iamcredentials.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "sts_api" {
+  project            = var.gcp_project
+  service            = "sts.googleapis.com"
+  disable_on_destroy = false
+}
+
+# ログ設定 (コストがかかるので必要に応じて有効化)
+# resource "google_project_iam_audit_config" "audit" {
+#   project = var.gcp_project
+#   service = "allServices"
+
+#   audit_log_config {
+#     log_type = "DATA_READ"
+#   }
+
+#   audit_log_config {
+#     log_type = "DATA_WRITE"
+#   }
+# }
+
+# Outputs
+data "google_project" "project" {
+  project_id = var.gcp_project
+}
+
+output "project_number" {
+  value = data.google_project.project.number
+}
+
+output "workload_identity_pool_id" {
+  value = google_iam_workload_identity_pool.workload_pool.workload_identity_pool_id
+}
+
+output "workload_identity_provider_id" {
+  value = google_iam_workload_identity_pool_provider.workload_provider.workload_identity_pool_provider_id
+}
+
+output "service_account_email" {
+  value = google_service_account.allow_calendar_api.email
 }
