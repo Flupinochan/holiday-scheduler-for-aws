@@ -1,5 +1,6 @@
 resource "aws_ecr_repository" "lambda_repo" {
-  name = "holiday-scheduler"
+  name         = "holiday-scheduler"
+  force_delete = true
 
   image_scanning_configuration {
     scan_on_push = false
@@ -112,10 +113,11 @@ resource "aws_scheduler_schedule" "daily_schedule" {
   }
 }
 
+# 削除しても30日は残るらしい。すぐに再作成したい場合は別id名で作成すること
 resource "google_iam_workload_identity_pool" "workload_pool" {
   provider = google
 
-  workload_identity_pool_id = "aws-pool"
+  workload_identity_pool_id = "aws-pool-20260406"
   display_name              = "AWS Workload Identity Pool"
   description               = "Pool for AWS Lambda to auth to GCP via Workload Identity Federation"
 

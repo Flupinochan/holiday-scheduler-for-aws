@@ -4,6 +4,7 @@
 
 ```bash
 # prepare
+cd terraform/
 terraform init
 terraform fmt
 terraform validate
@@ -12,7 +13,8 @@ terraform validate
 terraform plan -target="aws_ecr_repository.lambda_repo"
 terraform apply -target="aws_ecr_repository.lambda_repo"
 
-# 1. Push Image to ECR using Docker (詳しくはECRコンソール画面を見たほうが良い)
+# 1. Push Image to ECR using Docker (詳しくはECRコンソール画面から「プッシュコマンドを表示」)
+cd ../
 aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin 247574246160.dkr.ecr.ap-northeast-1.amazonaws.com
 TAG=$(date +%Y%m%d%H%M%S)
 echo ${TAG}
@@ -22,6 +24,7 @@ docker push 247574246160.dkr.ecr.ap-northeast-1.amazonaws.com/holiday-scheduler:
 
 # 2. Terraform Deploy
 # 例: terraform apply -var="image_tag=20260331233942"
+cd terraform/
 terraform plan -var="image_tag=タグ名"
 terraform apply -var="image_tag=タグ名"
 
@@ -46,6 +49,20 @@ terraform plan -var="image_tag=タグ名"
 terraform apply -var="image_tag=タグ名"
 ```
 
+## Workload Identity Poolの完全削除について
+
+仕様上、完全に削除されず、30日間残る。30日後に削除される  
+すぐに再作成したい場合は別id名で作成すること
+
+[プールの削除](https://docs.cloud.google.com/iam/docs/manage-workload-identity-pools-providers?utm_source=chatgpt.com&hl=ja#delete-pool)
+
+```bash
+# List POOL_ID
+gcloud iam workload-identity-pools list \
+  --location=global \
+  --show-deleted
+```
+
 ## Setup Terraform MCP
 
 [Terraform-MCP](https://github.com/hashicorp/terraform-mcp-server) を利用して構築
@@ -64,37 +81,3 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
 ```
 
 `.vscode/mcp.json` を作成
-
-```json
-{
-  "servers": {
-    "terraform": {
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "-e", "TFE_TOKEN=${input:tfe_token}",
-        "-e", "TFE_ADDRESS=${input:tfe_address}",
-        "hashicorp/terraform-mcp-server:0.4.0"
-      ]
-    }
-  },
-  "inputs": [
-    {
-      "type": "promptString",
-      "id": "tfe_token",
-      "description": "Terraform API Token",
-      "password": true
-    },
-    {
-      "type": "promptString",
-      "id": "tfe_address",
-      "description": "Terraform Address",
-      "password": false
-    }
-  ]
-}
-```
-
-[Available tools](https://developer.hashicorp.com/terraform/mcp-server/reference#available-tools)
